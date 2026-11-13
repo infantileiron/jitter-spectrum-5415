@@ -1,8 +1,9 @@
 import random,math,json
 from sqlalchemy import select,func
 from src.config.database import Base,engine,Session
-from src.models import User,SignalDataset,SamplingWindow,SpectralStudy,SpectralRun,PeriodReview,Report
+from src.models import User,SignalDataset,SamplingWindow,SpectralStudy,SpectralRun,PeriodReview,Report,ComparisonStudy,ComparisonRun
 from src.services.analysis import analyze
+from src.services.comparison_studies import analyze_comparison
 from src.utils.security import hash_password
 from src.utils.time import now
 def seed():
@@ -32,5 +33,14 @@ def seed():
    db.add(SpectralRun(id="demo-run",study_id="demo-study",status="completed",result=analyze(samples,db.get(SpectralStudy,"demo-study")),error="",created_at=now()));db.flush()
   if not db.get(PeriodReview,"demo-review"):db.add(PeriodReview(id="demo-review",run_id="demo-run",note="规则采样两谱候选接近30与80分钟。FFT PSD和LS解释比例单位不同，幅相以首观测为原点；峰值不构成链路故障因果证据。",decision="accepted",author="analyst@beiyu.demo",created_at=now()));db.flush()
   if not db.get(Report,"demo-report"):db.add(Report(id="demo-report",run_id="demo-run",title="北屿BY-01·周期候选人工复核",published_by="admin@beiyu.demo",created_at=now()))
-  db.commit();return {m.__tablename__:db.scalar(select(func.count()).select_from(m)) for m in (User,SignalDataset,SamplingWindow,SpectralStudy,SpectralRun,PeriodReview,Report)}
+  # 多链路周期对照：BY-01..04 共享30分钟成分；BY-06为常量失败态，用于演示证据不足不给同步结论
+  if not db.get(ComparisonStudy,"demo-compare"):db.add(ComparisonStudy(id="demo-compare",name="BY-01…04·共享周期联合对照",window_ids=["demo-window-1","demo-window-2","demo-window-3","demo-window-4"],detrend="linear",min_frequency=.005,max_frequency=.1,frequency_points=1400,created_at=now()));db.flush()
+  if not db.get(ComparisonRun,"demo-compare-run"):
+   study=db.get(ComparisonStudy,"demo-compare")
+   db.add(ComparisonRun(id="demo-compare-run",study_id="demo-compare",status="completed",result=analyze_comparison(db,study),error="",created_at=now()));db.flush()
+  if not db.get(ComparisonStudy,"demo-compare-weak"):db.add(ComparisonStudy(id="demo-compare-weak",name="BY-05与BY-06·证据不足对照示例",window_ids=["demo-window-5","demo-window-6"],detrend="mean",min_frequency=.005,max_frequency=.1,frequency_points=1200,created_at=now()));db.flush()
+  if not db.get(ComparisonRun,"demo-compare-weak-run"):
+   study=db.get(ComparisonStudy,"demo-compare-weak")
+   db.add(ComparisonRun(id="demo-compare-weak-run",study_id="demo-compare-weak",status="completed",result=analyze_comparison(db,study),error="",created_at=now()));db.flush()
+  db.commit();return {m.__tablename__:db.scalar(select(func.count()).select_from(m)) for m in (User,SignalDataset,SamplingWindow,SpectralStudy,SpectralRun,PeriodReview,Report,ComparisonStudy,ComparisonRun)}
 if __name__=="__main__":print(json.dumps(seed(),ensure_ascii=False))

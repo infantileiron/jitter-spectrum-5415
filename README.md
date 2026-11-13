@@ -26,13 +26,21 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 恰好frontend/backend/worker/db/redis五服务，全部healthcheck。backend等待PG/Redis健康，worker再等backend完成种子，frontend等待backend。PG、Redis AOF与worker心跳分别命名卷。结束演示执行 `docker compose down -v --remove-orphans`，会删除本项目演示数据。
 
-SEED_DEMO=true首次建表并幂等填充固定ID/自然键，不重复新增、不覆盖用户修改。seed2307生成6链路各480点（共2880点）：BY-01为带轻噪声30/80分钟组合；BY-02另含线性趋势；BY-03有采样间隔空缺但仍保留480个真实点；BY-04时间抖动不规则；BY-05为45/120分钟组合；BY-06为常量失败态示例。种子含六窗口、完成的BY-01双谱研究与人工报告。无真实链路资料。
+SEED_DEMO=true首次建表并幂等填充固定ID/自然键，不重复新增、不覆盖用户修改。seed2307生成6链路各480点（共2880点）：BY-01为带轻噪声30/80分钟组合；BY-02另含线性趋势；BY-03有采样间隔空缺但仍保留480个真实点；BY-04时间抖动不规则；BY-05为45/120分钟组合；BY-06为常量失败态示例。种子含六窗口、完成的BY-01双谱研究与人工报告，另含两个多链路对照研究：BY-01…04的共享30分钟周期联合对照（完成、有相位差）和BY-05/06的证据不足示例（明确不给同步结论）。无真实链路资料。
 
 ## 六实体与页面
 
 SignalDataset保留原始link_id/time_minutes/jitter_ms；SamplingWindow锁定链路、时间边界和实际点数；SpectralStudy保存去趋势、FFT窗、频率范围和LS网格；SpectralRun经Redis独立worker计算并持久化；PeriodReview记录人工判断与解释边界；Report仅在最新复核accepted后由admin归档，run唯一。
 
 六业务页：观测总览、带时间观测、采样窗口、频谱设置、周期与幅相、周期复核（含操作留痕）。实际原波形、残差、FFT、LS、峰表与联合幅相全部来自后端结果，前端只画数据。原始点先按时间稳定排序，连线只用于阅读，不表示重采样；表格预览30点，算法与图线使用全量窗口点。
+
+### 多链路周期对照（第07页）
+
+历史单链路流程与页面（第05页）完全保留，结果结构、查看方式和报告口径不变；多链路对照是独立的ComparisonStudy/ComparisonRun实体、独立Redis队列（`jitter-spectrum:comparison-jobs`）与独立页面，不写入或改写spectral_runs。
+
+对照只在所选窗口的**共同覆盖时段**内进行，参与窗口须来自同一观测集、不同链路，且每条链路在共同覆盖内至少16个真实点。各链路保留自己的真实采样时刻，缺采样不补0、不插值、不重采样；每条链路在原始观测上按真实时间拟合 `常数(+线性趋势)+sin+cos`。联合谱为各链路去趋势基线SSE加权的浮动均值LS解释比例：`Σ SSE0_k·P_k(f)/Σ SSE0_k`。先在显式等频率网格上找联合局部峰，再以峰所在网格索引的相邻网格线为括号做201点细化并三点二次插值；细化括号只由绝对频率轴决定，设计矩阵仅依赖`(t−共同原点)`。
+
+共享频率需**每条有效链路**在该频率解释比例≥0.20且联合解释比例≥0.30，并在联合峰中按功率降序选取全部链路都达标者。选定后对每条链路在原始观测上联合估计截距、斜率（linear时）、振幅、相位、RMSE与R²。相位约定为 `A*sin(2πf(t−t0)+phi)`、`phi=atan2(cos系数,sin系数)`，其中**t0统一为共同覆盖起点（绝对时间原点）**，而非各窗口首点；因此参与窗口边界错开或所有时间整体平移时，链路间两两相位差保持一致（同一估计频率下达机器精度），同时给出等效时滞 `Δphi/(2πf)` 与振幅比。样本不足、无共同覆盖、常量残差或无满足阈值的共享峰时，仅返回状态与原因，`shared_frequency`为空，不给任何同步结论。相位差只描述该共享频率上的时间关系，不证明故障因果，也不保证其它频率同步。
 
 ## 算法、单位与失败态
 
@@ -65,9 +73,9 @@ FFT频率定义可对照 [NumPy rfft官方说明](https://numpy.org/doc/1.26/ref
 |前端|React18.3、TypeScript5.7、Vite6、Nginx1.28|
 |后端|Python3.11、FastAPI、SQLAlchemy、PyJWT、NumPy1.26.4|
 |持久化|PostgreSQL16，DOUBLE参数与JSON观测/结果|
-|后台|Redis7.4 AOF、独立Python worker，BLAS/OMP/MKL线程均1|
+|后台|Redis7.4 AOF、独立Python worker，同时监听单链路与多链路两个队列，BLAS/OMP/MKL线程均1|
 
-frontend/src含api/stores/types/components/common/hooks/pages/router/utils/constants；backend/src含routes/controllers/services/models/schemas/middlewares/utils/constants/config；backend/scripts含seed，backend/migrations说明初次模型建表。测试、截图、日志、TESTING与verification在批次test-artifacts/gb-2307，源码不混入产物。
+frontend/src含api/stores/types/components/common/hooks/pages/router/utils/constants；backend/src含routes/controllers/services/models/schemas/middlewares/utils/constants/config；backend/scripts含seed，backend/migrations说明初次模型建表。多链路对照算法在backend/src/services/comparison.py，编排与校验在comparison_studies.py/comparison_runs.py。测试、截图、日志、TESTING与verification在批次test-artifacts/gb-2307，源码不混入产物；本仓库verify/提供本地可复跑的纯算法、编排与HTTP端到端脚本（compare_oracle.py、compare_integration.py、compare_e2e.py，宿主装NumPy/SQLAlchemy/FastAPI/httpx后用sqlite即可，不需起Docker）。
 
 后端本地安装requirements.txt，配置DATABASE_URL/REDIS_URL/JWT_SECRET并设置BLAS线程1，在backend执行`uvicorn src.main:app --reload`，另开`python -m src.worker`。前端`npm ci && npm run dev`；开发时将/api同源代理到19226，Docker Nginx已去前缀。React锁只改根包名和根package名，依赖节点原样，Docker用npm ci。
 
@@ -77,8 +85,8 @@ frontend/src含api/stores/types/components/common/hooks/pages/router/utils/const
 
 ## 已知边界
 
-两谱不是同一种功率尺度，不能仅凭峰高相互验证。有限跨度、窗泄漏、频率网格、采样模式和趋势预处理都会影响候选；没有置信区间、FAP或因果诊断。幅相以首观测为原点，改变窗口会改变相位。JSON表单导入，无CSV解析器。单worker启动恢复queued/running，无分布式租约；初次SQLAlchemy建表，无生产迁移回滚。Google Fonts使用Noto Sans SC/IBM Plex Mono，不可用时回退。开发密钥和演示账号供本地模拟。
+两谱不是同一种功率尺度，不能仅凭峰高相互验证。有限跨度、窗泄漏、频率网格、采样模式和趋势预处理都会影响候选；没有置信区间、FAP或因果诊断。单链路幅相以首观测为原点，改变窗口会改变相位，因此不能直接拿单链路相位互比；跨链路比较必须走第07页、以共同覆盖起点为统一原点的对照。多链路对照只拟合单个共享频率，未建模的其它周期分量会影响该频率的估计；有限窗口的频率估计存在约1e-6量级数值地板并经长跨度放大，同频率下的相位差本身仍达机器精度平移不变。无共同覆盖、共同覆盖内某链路不足16点、常量残差或无满足阈值的共享峰时只报原因，不给同步结论。JSON表单导入，无CSV解析器。单worker启动恢复queued/running（含两个队列），无分布式租约；初次SQLAlchemy建表，无生产迁移回滚。Google Fonts使用Noto Sans SC/IBM Plex Mono，不可用时回退。开发密钥和演示账号供本地模拟。
 
-测试脚本algorithm_oracle.py在宿主没有NumPy时会把同一手算oracle经stdin交给已启动backend容器执行；需先up栈，不额外安装宿主依赖。
+测试脚本algorithm_oracle.py在宿主没有NumPy时会把同一手算oracle经stdin交给已启动backend容器执行；需先up栈，不额外安装宿主依赖。verify/下的compare_oracle.py（48项算法断言，含平移/错开不变性、缺采样、无覆盖、样本不足、弱证据、确定性）、compare_integration.py与compare_e2e.py可在宿主直接复跑，覆盖多链路对照的算法、编排与HTTP权限链路。
 
 MIT License。
